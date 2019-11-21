@@ -143,6 +143,7 @@ class REDSDataset(data.Dataset):
             if self.random_reverse and random.random() < 0.5:
                 neighbor_list.reverse()
             name_b = '{:08d}'.format(neighbor_list[self.half_N_frames])
+            key = '_'.join([name_a, name_b])
 
         assert len(
             neighbor_list) == self.opt['N_frames'], 'Wrong length of neighbor list: {}'.format(
