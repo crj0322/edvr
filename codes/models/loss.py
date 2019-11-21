@@ -2,6 +2,45 @@ import torch
 import torch.nn as nn
 
 
+class FocalCharbonnierLoss(nn.Module):
+    """Focal Charbonnier Loss (L1)"""
+
+    def __init__(self, eps=1e-6):
+        super(FocalCharbonnierLoss, self).__init__()
+        self.eps = eps
+
+    def forward(self, x, y):
+        diff = x - y
+        l1_diff = torch.sqrt(diff * diff + self.eps)
+        alpha = torch.mean(l1_diff, dim=[1, 2, 3], keepdim=True)
+        loss = torch.sum(alpha.tanh_() * l1_diff)
+        
+        return loss
+
+
+class TopkCharbonnierLoss(nn.Module):
+    """Topk Charbonnier Loss (L1)"""
+
+    def __init__(self, eps=1e-6, keep_ratio=0.5):
+        super(TopkCharbonnierLoss, self).__init__()
+        self.eps = eps
+        self.keep_ratio = keep_ratio
+
+    def forward(self, x, y):
+        B = x.size(0)
+        k = int(B * self.keep_ratio)
+        if k < 1:
+            k = 1
+        
+        diff = x - y
+        l1_diff = torch.sqrt(diff * diff + self.eps)
+        batch_loss = torch.sum(l1_diff, dim=[1, 2, 3])
+        loss, _ = torch.topk(batch_loss, k, dim=0, sorted=False)
+        loss = loss.sum()
+        
+        return loss
+
+
 class CharbonnierLoss(nn.Module):
     """Charbonnier Loss (L1)"""
 
