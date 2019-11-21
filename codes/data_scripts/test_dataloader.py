@@ -9,14 +9,14 @@ from utils import util  # noqa: E402
 
 
 def main():
-    dataset = 'DIV2K800_sub'  # REDS | Vimeo90K | DIV2K800_sub
+    dataset = 'youku'  # REDS | Vimeo90K | DIV2K800_sub | youku
     opt = {}
     opt['dist'] = False
-    opt['gpu_ids'] = [0]
+    opt['gpu_ids'] = [4]
     if dataset == 'REDS':
         opt['name'] = 'test_REDS'
-        opt['dataroot_GT'] = '../../datasets/REDS/train_sharp_wval.lmdb'
-        opt['dataroot_LQ'] = '../../datasets/REDS/train_sharp_bicubic_wval.lmdb'
+        opt['dataroot_GT'] = '/media/tclwh2/public/reds/train_sharp_wval.lmdb'
+        opt['dataroot_LQ'] = '/media/tclwh2/public/reds/train_sharp_bicubic_wval.lmdb'
         opt['mode'] = 'REDS'
         opt['N_frames'] = 5
         opt['phase'] = 'train'
@@ -68,6 +68,27 @@ def main():
         opt['use_rot'] = True
         opt['color'] = 'RGB'
         opt['data_type'] = 'lmdb'  # img | lmdb
+    elif dataset == 'youku':
+        opt['name'] = 'test_youku'
+        opt['dataroot_GT'] = '/media/tclwh2/public/youku/val_bak/gt'
+        opt['dataroot_LQ'] = '/media/tclwh2/public/youku/val_bak/lq'
+        opt['mode'] = 'youku'
+        opt['N_frames'] = 5
+        opt['phase'] = 'train'
+        opt['use_shuffle'] = False
+        opt['n_workers'] = 1
+        opt['batch_size'] = 1
+        opt['GT_size'] = 256
+        opt['LQ_size'] = 64
+        opt['scale'] = 4
+        opt['use_flip'] = False
+        opt['use_rot'] = False
+        opt['down_sample'] = True
+        opt['interval_list'] = [1]
+        opt['random_reverse'] = False
+        opt['border_mode'] = False
+        opt['cache_keys'] = None
+        opt['data_type'] = 'img'
     else:
         raise ValueError('Please implement by yourself.')
 
@@ -82,13 +103,13 @@ def main():
         if i > 5:
             break
         print(i)
-        if dataset == 'REDS' or dataset == 'Vimeo90K':
+        if dataset == 'REDS' or dataset == 'Vimeo90K' or dataset == 'youku':
             LQs = data['LQs']
         else:
             LQ = data['LQ']
         GT = data['GT']
 
-        if dataset == 'REDS' or dataset == 'Vimeo90K':
+        if dataset == 'REDS' or dataset == 'Vimeo90K' or dataset == 'youku':
             for j in range(LQs.size(1)):
                 torchvision.utils.save_image(LQs[:, j, :, :, :],
                                              'tmp/LQ_{:03d}_{}.png'.format(i, j), nrow=nrow,

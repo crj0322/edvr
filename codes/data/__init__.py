@@ -39,6 +39,8 @@ def create_dataset(dataset_opt):
         from data.Vimeo90K_dataset import Vimeo90KDataset as D
     elif mode == 'video_test':
         from data.video_test_dataset import VideoTestDataset as D
+    elif mode =='youku':
+        from data.youku_dataset import YOUKUDataset as D
     else:
         raise NotImplementedError('Dataset [{:s}] is not recognized.'.format(mode))
     dataset = D(dataset_opt)

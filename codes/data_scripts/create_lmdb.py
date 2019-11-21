@@ -15,15 +15,18 @@ import utils.util as util  # noqa: E402
 
 
 def main():
-    dataset = 'DIV2K_demo'  # vimeo90K | REDS | general (e.g., DIV2K, 291) | DIV2K_demo |test
-    mode = 'GT'  # used for vimeo90k and REDS datasets
+    dataset = 'youku'  # vimeo90K | REDS | general (e.g., DIV2K, 291) | DIV2K_demo | youku | test
+    mode = 'gt'  # used for vimeo90k, REDS and youku datasets
     # vimeo90k: GT | LR | flow
     # REDS: train_sharp, train_sharp_bicubic, train_blur_bicubic, train_blur, train_blur_comp
     #       train_sharp_flowx4
+    # youku: gt | lq
     if dataset == 'vimeo90k':
         vimeo90k(mode)
     elif dataset == 'REDS':
         REDS(mode)
+    elif dataset == 'youku':
+        youku(mode)
     elif dataset == 'general':
         opt = {}
         opt['img_folder'] = '../../datasets/DIV2K/DIV2K800_sub'
@@ -43,11 +46,13 @@ def main():
         opt['name'] = 'DIV2K800_sub_bicLRx4'
         general_image_folder(opt)
     elif dataset == 'test':
-        test_lmdb('../../datasets/REDS/train_sharp_wval.lmdb', 'REDS')
+        test_lmdb('/media/tclwh/jinfan/crj/data/youku/youku_train_gt.lmdb', 'youku')
 
 
 def read_image_worker(path, key):
     img = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+    if img is None:
+        print('read fail: ', path)
     return (key, img)
 
 
@@ -386,8 +391,107 @@ def REDS(mode):
     pickle.dump(meta_info, open(osp.join(lmdb_save_path, 'meta_info.pkl'), "wb"))
     print('Finish creating lmdb meta info.')
 
+def youku(mode):
+    """Create lmdb for the youku dataset, each image with a fixed size
+    GT: [3, 1080, 1920] or [3, 1152, 2048], key: 00000_000000
+    LR: [3, 270, 480] or [3, 288, 512], key: 00000_000000
+    """
+    #### configurations
+    read_all_imgs = False  # whether real all images to memory with multiprocessing
+    # Set False for use limited memory
+    BATCH = 5000  # After BATCH images, lmdb commits, if read_all_imgs = False
+    if mode == 'gt':
+        train_folder = '/media/tclwh2/public/youku/train/gt'
+        val_folder = '/media/tclwh2/public/youku/val/gt'
+        lmdb_save_path = '/media/tclwh2/public/youku/youku_train_gt.lmdb'
+        H_dst, W_dst = (1080, 1152), (1920, 2048)
+    elif mode == 'lq':
+        train_folder = '/media/tclwh2/public/youku/train/lq'
+        val_folder = '/media/tclwh2/public/youku/val/lq'
+        lmdb_save_path = '/media/tclwh2/public/youku/youku_train_lq.lmdb'
+        H_dst, W_dst = (270, 288), (480, 512)
+    
+    n_thread = 40
+    ########################################################
+    if not lmdb_save_path.endswith('.lmdb'):
+        raise ValueError("lmdb_save_path must end with \'lmdb\'.")
+    if osp.exists(lmdb_save_path):
+        print('Folder [{:s}] already exists. Exit...'.format(lmdb_save_path))
+        sys.exit(1)
 
-def test_lmdb(dataroot, dataset='REDS'):
+    #### read all the image paths to a list
+    print('Reading image path list ...')
+    train_img_list = data_util._get_paths_from_images(train_folder)
+    val_img_list = data_util._get_paths_from_images(val_folder)
+    all_img_list = sorted(train_img_list + val_img_list)
+    keys = []
+    for img_path in all_img_list:
+        split_rlt = img_path.split('/')
+        folder = split_rlt[-2]
+        img_name = split_rlt[-1].split('.png')[0]
+        keys.append(folder + '_' + img_name)
+
+    if read_all_imgs:
+        #### read all images to memory (multiprocessing)
+        dataset = {}  # store all image data. list cannot keep the order, use dict
+        print('Read images with multiprocessing, #thread: {} ...'.format(n_thread))
+        pbar = util.ProgressBar(len(all_img_list))
+
+        def mycallback(arg):
+            '''get the image data and update pbar'''
+            key = arg[0]
+            dataset[key] = arg[1]
+            pbar.update('Reading {}'.format(key))
+
+        pool = Pool(n_thread)
+        for path, key in zip(all_img_list, keys):
+            pool.apply_async(read_image_worker, args=(path, key), callback=mycallback)
+        pool.close()
+        pool.join()
+        print('Finish reading {} images.\nWrite lmdb...'.format(len(all_img_list)))
+
+    #### create lmdb environment
+    cnt_1 = 993 * 100
+    cnt_2 = 7 * 100
+    assert cnt_1 + cnt_2 == len(all_img_list)
+    img = cv2.imread(all_img_list[0], cv2.IMREAD_UNCHANGED)
+    data_size_per_img_1 = cv2.imread(all_img_list[0], cv2.IMREAD_UNCHANGED).nbytes
+    data_size_per_img_2 = cv2.imread(all_img_list[30 * 100], cv2.IMREAD_UNCHANGED).nbytes
+    assert data_size_per_img_1 != data_size_per_img_2
+    print('data size per image is: %d and %d' % (data_size_per_img_1, data_size_per_img_2))
+    data_size = data_size_per_img_1 * cnt_1 + data_size_per_img_2 + cnt_2
+    env = lmdb.open(lmdb_save_path, map_size=data_size * 10)
+
+    #### write data to lmdb
+    pbar = util.ProgressBar(len(all_img_list))
+    txn = env.begin(write=True)
+    for idx, (path, key) in enumerate(zip(all_img_list, keys)):
+        pbar.update('Write {}'.format(key))
+        key_byte = key.encode('ascii')
+        data = dataset[key] if read_all_imgs else cv2.imread(path, cv2.IMREAD_UNCHANGED)
+        H, W, C = data.shape
+        assert H in H_dst and W in W_dst and C == 3, 'different shape.'
+        txn.put(key_byte, data)
+        if not read_all_imgs and idx % BATCH == 0:
+            txn.commit()
+            txn = env.begin(write=True)
+    txn.commit()
+    env.close()
+    print('Finish writing lmdb.')
+
+    #### create meta information
+    meta_info = {}
+    meta_info['name'] = 'youku_train_{}'.format(mode)
+    channel = 3
+    meta_info['resolution_2'] = '{}_{}_{}'.format(channel, H_dst[1], W_dst[1])
+    meta_info['resolution'] = '{}_{}_{}'.format(channel, H_dst[0], W_dst[0])
+    meta_info['res_2_list'] = '_'.join(['31', '44', '54', '101', '121', '142', '177'])
+    meta_info['keys'] = keys
+    pickle.dump(meta_info, open(osp.join(lmdb_save_path, 'meta_info.pkl'), "wb"))
+    print('Finish creating lmdb meta info.')
+
+
+def test_lmdb(dataroot, dataset='youku'):
     env = lmdb.open(dataroot, readonly=True, lock=False, readahead=False, meminit=False)
     meta_info = pickle.load(open(osp.join(dataroot, 'meta_info.pkl'), "rb"))
     print('Name: ', meta_info['name'])
@@ -396,14 +500,17 @@ def test_lmdb(dataroot, dataset='REDS'):
     # read one image
     if dataset == 'vimeo90k':
         key = '00001_0001_4'
-    else:
+    elif dataset == 'REDS':
         key = '000_00000000'
+    else:
+        key = '00049_000000'
     print('Reading {} for test.'.format(key))
     with env.begin(write=False) as txn:
         buf = txn.get(key.encode('ascii'))
     img_flat = np.frombuffer(buf, dtype=np.uint8)
     C, H, W = [int(s) for s in meta_info['resolution'].split('_')]
     img = img_flat.reshape(H, W, C)
+    # img = img_flat.reshape(1152, 2048, C)
     cv2.imwrite('test.png', img)
 
 

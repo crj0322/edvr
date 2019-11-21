@@ -77,6 +77,8 @@ def read_img(env, path, size=None):
     return: Numpy float32, HWC, BGR, [0,1]"""
     if env is None:  # img
         img = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+        if size is not None:
+            img = cv2.resize(img, size, interpolation=cv2.INTER_CUBIC)
     else:
         img = _read_img_lmdb(env, path, size)
     img = img.astype(np.float32) / 255.
