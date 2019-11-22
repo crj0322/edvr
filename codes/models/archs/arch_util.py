@@ -31,6 +31,57 @@ def make_layer(block, n_layers):
     return nn.Sequential(*layers)
 
 
+## Channel Attention (CA) Layer
+class CALayer(nn.Module):
+    def __init__(self, channel, reduction=4):
+        super(CALayer, self).__init__()
+        # global average pooling: feature --> point
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        # feature channel downscale and upscale --> channel weight
+        self.conv_du = nn.Sequential(
+            nn.Conv2d(channel, channel // reduction, 1, padding=0, bias=True),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(channel // reduction, channel, 1, padding=0, bias=True),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        y = self.avg_pool(x)
+        y = self.conv_du(y)
+        return x * y
+
+
+## Residual Channel Attention Block (RCAB)
+class RCAB_noBN(nn.Module):
+    def __init__(
+            self, nf, conv=nn.Conv2d, reduction=8, bn=False, act=nn.ReLU(True), res_scale=1):
+
+        super(RCAB_noBN, self).__init__()
+        modules_body = []
+        self.conv1 = conv(nf, nf, 3, 1, 1, bias=True)
+        self.conv2 = conv(nf, nf, 3, 1, 1, bias=True)
+
+        modules_body.append(self.conv1)
+        if bn:
+            modules_body.append(nn.BatchNorm2d(nf))
+        modules_body.append(act)
+        modules_body.append(self.conv2)
+        if bn:
+            modules_body.append(nn.BatchNorm2d(nf))
+        modules_body.append(CALayer(nf, reduction))
+        self.body = nn.Sequential(*modules_body)
+        self.res_scale = res_scale
+
+        # initialization
+        initialize_weights([self.conv1, self.conv2], 0.1)
+
+    def forward(self, x):
+        # res = self.body(x)
+        res = self.body(x).mul(self.res_scale)
+        res += x
+        return res
+
+
 class ResidualBlock_noBN(nn.Module):
     '''Residual block w/o BN
     ---Conv-ReLU-Conv-+-

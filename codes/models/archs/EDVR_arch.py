@@ -205,14 +205,16 @@ class TSA_Fusion(nn.Module):
 
 class EDVR(nn.Module):
     def __init__(self, nf=64, nframes=5, groups=8, front_RBs=5, back_RBs=10, center=None,
-                 predeblur=False, HR_in=False, w_TSA=True):
+                 predeblur=False, HR_in=False, w_TSA=True, block_type='residual'):
         super(EDVR, self).__init__()
         self.nf = nf
         self.center = nframes // 2 if center is None else center
         self.is_predeblur = True if predeblur else False
         self.HR_in = True if HR_in else False
         self.w_TSA = w_TSA
-        ResidualBlock_noBN_f = functools.partial(arch_util.ResidualBlock_noBN, nf=nf)
+        block_fns = {'residual': arch_util.ResidualBlock_noBN,
+                     'rcab': arch_util.RCAB_noBN}
+        Block_noBN_f = functools.partial(block_fns[block_type], nf=nf)
 
         #### extract features (for each frame)
         if self.is_predeblur:
@@ -225,7 +227,7 @@ class EDVR(nn.Module):
                 self.conv_first_3 = nn.Conv2d(nf, nf, 3, 2, 1, bias=True)
             else:
                 self.conv_first = nn.Conv2d(3, nf, 3, 1, 1, bias=True)
-        self.feature_extraction = arch_util.make_layer(ResidualBlock_noBN_f, front_RBs)
+        self.feature_extraction = arch_util.make_layer(Block_noBN_f, front_RBs)
         self.fea_L2_conv1 = nn.Conv2d(nf, nf, 3, 2, 1, bias=True)
         self.fea_L2_conv2 = nn.Conv2d(nf, nf, 3, 1, 1, bias=True)
         self.fea_L3_conv1 = nn.Conv2d(nf, nf, 3, 2, 1, bias=True)
@@ -238,7 +240,7 @@ class EDVR(nn.Module):
             self.tsa_fusion = nn.Conv2d(nframes * nf, nf, 1, 1, bias=True)
 
         #### reconstruction
-        self.recon_trunk = arch_util.make_layer(ResidualBlock_noBN_f, back_RBs)
+        self.recon_trunk = arch_util.make_layer(Block_noBN_f, back_RBs)
         #### upsampling
         self.upconv1 = nn.Conv2d(nf, nf * 4, 3, 1, 1, bias=True)
         self.upconv2 = nn.Conv2d(nf, 64 * 4, 3, 1, 1, bias=True)

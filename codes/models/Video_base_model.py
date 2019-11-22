@@ -159,6 +159,10 @@ class VideoBaseModel(BaseModel):
         if self.rank <= 0:
             logger.info('Network G structure: {}, with parameters: {:,d}'.format(net_struc_str, n))
             logger.info(s)
+            num_params = 0
+            for param in self.netG.parameters():
+                num_params += param.numel()
+            logger.info("Num params:{}M".format(num_params/1e6))
 
     def load(self):
         load_path_G = self.opt['path']['pretrain_model_G']
