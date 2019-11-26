@@ -4,6 +4,7 @@ import argparse
 import random
 import logging
 
+import cv2
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
@@ -147,31 +148,43 @@ def main():
         if opt['dist']:
             train_sampler.set_epoch(epoch)
         for _, train_data in enumerate(train_loader):
-            current_step += 1
-            if current_step > total_iters:
-                break
-            #### update learning rate
-            model.update_learning_rate(current_step, warmup_iter=opt['train']['warmup_iter'])
+            if opt['mode'] == 'train':
+                current_step += 1
+                if current_step > total_iters:
+                    break
 
-            #### training
-            model.feed_data(train_data)
-            model.optimize_parameters(current_step)
+                #### training
+                model.feed_data(train_data)
+                model.optimize_parameters(current_step)
 
-            #### log
-            if current_step % opt['logger']['print_freq'] == 0:
-                logs = model.get_current_log()
-                message = '[epoch:{:3d}, iter:{:8,d}, lr:('.format(epoch, current_step)
-                for v in model.get_current_learning_rate():
-                    message += '{:.3e},'.format(v)
-                message += ')] '
-                for k, v in logs.items():
-                    message += '{:s}: {:.4e} '.format(k, v)
-                    # tensorboard logger
-                    if opt['use_tb_logger'] and 'debug' not in opt['name']:
-                        if rank <= 0:
-                            tb_logger.add_scalar(k, v, current_step)
-                if rank <= 0:
-                    logger.info(message)
+                #### update learning rate
+                model.update_learning_rate(current_step, warmup_iter=opt['train']['warmup_iter'])
+
+                #### log
+                if current_step % opt['logger']['print_freq'] == 0:
+                    logs = model.get_current_log()
+                    message = '[epoch:{:3d}, iter:{:8,d}, lr:('.format(epoch, current_step)
+                    for v in model.get_current_learning_rate():
+                        message += '{:.3e},'.format(v)
+                    message += ')] '
+                    for k, v in logs.items():
+                        message += '{:s}: {:.4e} '.format(k, v)
+                        # tensorboard logger
+                        if opt['use_tb_logger'] and 'debug' not in opt['name']:
+                            if rank <= 0:
+                                tb_logger.add_scalar(k, v, current_step)
+                    if rank <= 0:
+                        logger.info(message)
+
+                #### save models and training states
+                if current_step % opt['logger']['save_checkpoint_freq'] == 0:
+                    if rank <= 0:
+                        logger.info('Saving models and training states {}.'.format(current_step))
+                        model.save(current_step)
+                        model.save_training_state(epoch, current_step)
+            else:
+                opt['train']['val_freq'] = 1
+
             #### validation
             if opt['datasets'].get('val', None) and current_step % opt['train']['val_freq'] == 0:
                 if opt['model'] in ['sr', 'srgan'] and rank <= 0:  # image restoration validation
@@ -233,7 +246,14 @@ def main():
                             gt_img = util.tensor2img(visuals['GT'])  # uint8
                             # calculate PSNR
                             psnr_rlt[folder][idx_d] = util.calculate_psnr(rlt_img, gt_img)
-
+                            if opt['datasets']['val']['save_imgs'] and rank <= 0:
+                                save_folder = os.path.join(opt['path']['val_images'],
+                                                           'val_{}_{}'.format(opt['name'],
+                                                                              current_step),
+                                                           folder)
+                                util.mkdirs(save_folder)
+                                cv2.imwrite(os.path.join(save_folder, '{}.png'.format(idx)),
+                                            rlt_img)
                             if rank == 0:
                                 for _ in range(world_size):
                                     pbar.update('Test {} - {}/{}'.format(folder, idx_d, max_idx))
@@ -249,9 +269,9 @@ def main():
                                 psnr_rlt_avg[k] = torch.mean(v).cpu().item()
                                 psnr_total_avg += psnr_rlt_avg[k]
                             psnr_total_avg /= len(psnr_rlt)
-                            log_s = '# Validation # PSNR: {:.4e}:'.format(psnr_total_avg)
+                            log_s = '# Validation # PSNR: {:.4f}:'.format(psnr_total_avg)
                             for k, v in psnr_rlt_avg.items():
-                                log_s += ' {}: {:.4e}'.format(k, v)
+                                log_s += ' {}: {:.4f}'.format(k, v)
                             logger.info(log_s)
                             if opt['use_tb_logger'] and 'debug' not in opt['name']:
                                 tb_logger.add_scalar('psnr_avg', psnr_total_avg, current_step)
@@ -260,15 +280,20 @@ def main():
                     else:
                         pbar = util.ProgressBar(len(val_loader))
                         psnr_rlt = {}  # with border and center frames
+                        # ssim_rlt = {}
                         psnr_rlt_avg = {}
+                        # ssim_rlt_avg = {}
                         psnr_total_avg = 0.
+                        # ssim_total_avg = 0.
                         for val_data in val_loader:
                             folder = val_data['folder'][0]
-                            # idx_d = val_data['idx'].item()
                             idx_d = val_data['idx']
+                            idx = idx_d[0].split('/')[0]
                             # border = val_data['border'].item()
                             if psnr_rlt.get(folder, None) is None:
                                 psnr_rlt[folder] = []
+                            # if ssim_rlt.get(folder, None) is None:
+                            #     ssim_rlt[folder] = []
 
                             model.feed_data(val_data)
                             model.test()
@@ -276,29 +301,42 @@ def main():
                             rlt_img = util.tensor2img(visuals['rlt'])  # uint8
                             gt_img = util.tensor2img(visuals['GT'])  # uint8
 
+                            # save images
+                            if opt['datasets']['val']['save_imgs']:
+                                save_folder = os.path.join(opt['path']['val_images'],
+                                                            'val_{}_{}'.format(opt['name'],
+                                                                                current_step),
+                                                            folder)
+                                util.mkdirs(save_folder)
+                                cv2.imwrite(os.path.join(save_folder, '{}.png'.format(idx)),
+                                            rlt_img)
                             # calculate PSNR
                             psnr = util.calculate_psnr(rlt_img, gt_img)
                             psnr_rlt[folder].append(psnr)
+                            # calculate ssim
+                            # ssim = util.calculate_ssim(rlt_img, gt_img)
+                            # ssim_rlt[folder].append(ssim)
                             pbar.update('Test {} - {}'.format(folder, idx_d))
+                        # for k, v in ssim_rlt.items():
+                        #     ssim_rlt_avg[k] = sum(v) / len(v)
+                        #     ssim_total_avg += ssim_rlt_avg[k]
+                        # ssim_total_avg /= len(ssim_rlt)
+                        # logger.info('# Validation # ssim: {:.4f}:'.format(ssim_total_avg))
                         for k, v in psnr_rlt.items():
                             psnr_rlt_avg[k] = sum(v) / len(v)
                             psnr_total_avg += psnr_rlt_avg[k]
                         psnr_total_avg /= len(psnr_rlt)
-                        log_s = '# Validation # PSNR: {:.4e}:'.format(psnr_total_avg)
+                        log_s = '# Validation # PSNR: {:.4f}:'.format(psnr_total_avg)
                         for k, v in psnr_rlt_avg.items():
-                            log_s += ' {}: {:.4e}'.format(k, v)
+                            log_s += ' {}: {:.4f}'.format(k, v)
                         logger.info(log_s)
                         if opt['use_tb_logger'] and 'debug' not in opt['name']:
                             tb_logger.add_scalar('psnr_avg', psnr_total_avg, current_step)
+                            # tb_logger.add_scalar('ssim_avg', ssim_total_avg, current_step)
                             for k, v in psnr_rlt_avg.items():
                                 tb_logger.add_scalar(k, v, current_step)
-
-            #### save models and training states
-            if current_step % opt['logger']['save_checkpoint_freq'] == 0:
-                if rank <= 0:
-                    logger.info('Saving models and training states.')
-                    model.save(current_step)
-                    model.save_training_state(epoch, current_step)
+                            # for k, v in ssim_rlt_avg.items():
+                            #     tb_logger.add_scalar(k+'_ssim', v, current_step)
 
     if rank <= 0:
         logger.info('Saving the final model.')

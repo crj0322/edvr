@@ -17,6 +17,8 @@ def parse(opt_path, is_train=True):
     opt['is_train'] = is_train
     if opt['distortion'] == 'sr':
         scale = opt['scale']
+    if 'mode' not in opt.keys():
+        opt['mode'] = 'train'
 
     # datasets
     for phase, dataset in opt['datasets'].items():
