@@ -7,8 +7,7 @@ from torch.nn.parallel import DataParallel, DistributedDataParallel
 import models.networks as networks
 import models.lr_scheduler as lr_scheduler
 from .base_model import BaseModel
-from models.loss import CharbonnierLoss, TopkCharbonnierLoss
-from models.ssim import SSIM
+from models.loss import CharbonnierLoss, TopkCharbonnierLoss, CombinedLoss
 
 logger = logging.getLogger('base')
 
@@ -46,8 +45,12 @@ class VideoBaseModel(BaseModel):
                 self.cri_pix = CharbonnierLoss().to(self.device)
             elif loss_type == 'tcb':
                 self.cri_pix = TopkCharbonnierLoss().to(self.device)
-            elif loss_type == 'ssim':
-                self.cri_pix = SSIM().to(self.device)
+            elif loss_type == 'comb':
+                self.cri_pix = CombinedLoss().to(self.device)
+            elif loss_type == 'pcb': # todo
+                import torchvision.models as models
+                self.netP = models.vgg16(pretrained=True)
+                pass
             else:
                 raise NotImplementedError('Loss type [{:s}] is not recognized.'.format(loss_type))
             self.l_pix_w = train_opt['pixel_weight']

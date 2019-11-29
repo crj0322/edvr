@@ -14,6 +14,7 @@ import options.options as option
 from utils import util
 from data import create_dataloader, create_dataset
 from models import create_model
+from models.ssim import SSIM
 
 
 def init_dist(backend='nccl', **kwargs):
@@ -129,6 +130,7 @@ def main():
 
     #### create model
     model = create_model(opt)
+    ssim_fn = SSIM().to(model.device)
 
     #### resume training
     if resume_state:
@@ -280,11 +282,11 @@ def main():
                     else:
                         pbar = util.ProgressBar(len(val_loader))
                         psnr_rlt = {}  # with border and center frames
-                        # ssim_rlt = {}
+                        ssim_rlt = {}
                         psnr_rlt_avg = {}
-                        # ssim_rlt_avg = {}
+                        ssim_rlt_avg = {}
                         psnr_total_avg = 0.
-                        # ssim_total_avg = 0.
+                        ssim_total_avg = 0.
                         for val_data in val_loader:
                             folder = val_data['folder'][0]
                             idx_d = val_data['idx']
@@ -292,8 +294,8 @@ def main():
                             # border = val_data['border'].item()
                             if psnr_rlt.get(folder, None) is None:
                                 psnr_rlt[folder] = []
-                            # if ssim_rlt.get(folder, None) is None:
-                            #     ssim_rlt[folder] = []
+                            if ssim_rlt.get(folder, None) is None:
+                                ssim_rlt[folder] = []
 
                             model.feed_data(val_data)
                             model.test()
@@ -314,14 +316,17 @@ def main():
                             psnr = util.calculate_psnr(rlt_img, gt_img)
                             psnr_rlt[folder].append(psnr)
                             # calculate ssim
-                            # ssim = util.calculate_ssim(rlt_img, gt_img)
-                            # ssim_rlt[folder].append(ssim)
+                            ssim = ssim_fn(model.fake_H, model.real_H).data.cpu().item()
+                            ssim_rlt[folder].append(ssim)
                             pbar.update('Test {} - {}'.format(folder, idx_d))
-                        # for k, v in ssim_rlt.items():
-                        #     ssim_rlt_avg[k] = sum(v) / len(v)
-                        #     ssim_total_avg += ssim_rlt_avg[k]
-                        # ssim_total_avg /= len(ssim_rlt)
-                        # logger.info('# Validation # ssim: {:.4f}:'.format(ssim_total_avg))
+                        for k, v in ssim_rlt.items():
+                            ssim_rlt_avg[k] = sum(v) / len(v)
+                            ssim_total_avg += ssim_rlt_avg[k]
+                        ssim_total_avg /= len(ssim_rlt)
+                        log_s = '# Validation # SSIM: {:.4f}:'.format(ssim_total_avg)
+                        for k, v in ssim_rlt_avg.items():
+                            log_s += ' {}: {:.4f}'.format(k, v)
+                        logger.info(log_s)
                         for k, v in psnr_rlt.items():
                             psnr_rlt_avg[k] = sum(v) / len(v)
                             psnr_total_avg += psnr_rlt_avg[k]
@@ -332,11 +337,11 @@ def main():
                         logger.info(log_s)
                         if opt['use_tb_logger'] and 'debug' not in opt['name']:
                             tb_logger.add_scalar('psnr_avg', psnr_total_avg, current_step)
-                            # tb_logger.add_scalar('ssim_avg', ssim_total_avg, current_step)
+                            tb_logger.add_scalar('ssim_avg', ssim_total_avg, current_step)
                             for k, v in psnr_rlt_avg.items():
-                                tb_logger.add_scalar(k, v, current_step)
-                            # for k, v in ssim_rlt_avg.items():
-                            #     tb_logger.add_scalar(k+'_ssim', v, current_step)
+                                tb_logger.add_scalar(k+'_psnr', v, current_step)
+                            for k, v in ssim_rlt_avg.items():
+                                tb_logger.add_scalar(k+'_ssim', v, current_step)
 
     if rank <= 0:
         logger.info('Saving the final model.')
