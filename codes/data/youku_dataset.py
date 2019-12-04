@@ -6,6 +6,7 @@ import os.path as osp
 import random
 import logging
 import numpy as np
+import pickle
 import lmdb
 import torch
 import torch.utils.data as data
@@ -34,25 +35,17 @@ class YOUKUDataset(data.Dataset):
 
         self.half_N_frames = opt['N_frames'] // 2
         self.GT_root, self.LQ_root = opt['dataroot_GT'], opt['dataroot_LQ']
-        # if opt['down_sample']:
-        #     self.x2GT_root, self.x2LQ_root = opt['dataroot_x2GT'], opt['dataroot_x2LQ']
+        if opt['down_sample']:
+            self.x2GT_root, self.x2LQ_root = opt['dataroot_x2GT'], opt['dataroot_x2LQ']
         self.data_type = self.opt['data_type']
         self.LR_input = False if opt['GT_size'] == opt['LQ_size'] else True  # low resolution inputs
         #### directly load image keys
         self.paths_GT, _ = util.get_image_paths(self.data_type, opt['dataroot_GT'])
-        if self.data_type == 'lmdb':
-            logger.info('Using lmdb meta info for cache keys.')
-            # remove validation set
-            self.paths_GT = [
-                v for v in self.paths_GT if v.split('_')[0] not in ['00025', '00094', '00194', '00280', '00281', '00284', '00333', '00396', '00502', '00519',\
-                     '00529', '00557', '00584', '00703', '00724', '00814', '00835', '00845', '00870', '00924']
-        ]
-
         assert self.paths_GT, 'Error: GT path is empty.'
 
         if self.data_type == 'lmdb':
-            self.GT_env, self.LQ_env = None, None
-        elif self.data_type == 'img':
+            self._init_lmdb()
+        elif self.data_type == 'img' or self.data_type == 'pkl':
             pass
         else:
             raise ValueError('Wrong data type: {}'.format(self.data_type))
@@ -69,25 +62,19 @@ class YOUKUDataset(data.Dataset):
 
     def __getitem__(self, index):
         # downsample augmentation
-        # if self.opt['down_sample'] and random.random() < 0.5:
-        #     GT_root = self.x2GT_root
-        #     LQ_root = self.x2LQ_root
-        # else:
-        #     GT_root = self.GT_root
-        #     LQ_root = self.LQ_root
-        down_scale = 1
         if self.opt['down_sample'] and random.random() < 0.5:
             down_scale = 2
-        GT_root = self.GT_root
-        LQ_root = self.LQ_root
-
-        if self.data_type == 'lmdb' and (self.GT_env is None or self.LQ_env is None):
-            self._init_lmdb()
+            GT_root = self.x2GT_root
+            LQ_root = self.x2LQ_root
+        else:
+            down_scale = 1
+            GT_root = self.GT_root
+            LQ_root = self.LQ_root
         
         scale = self.opt['scale']
         GT_size = self.opt['GT_size']
         key = self.paths_GT[index]
-        if self.data_type == 'img':
+        if self.data_type == 'img' or self.data_type == 'pkl':
             name_a, name_b = key.split(os.sep)[-2:]
             name_b = name_b.split('.')[0]
         else:
@@ -125,44 +112,48 @@ class YOUKUDataset(data.Dataset):
             if self.random_reverse and random.random() < 0.5:
                 neighbor_list.reverse()
             name_b = '{:06d}'.format(neighbor_list[self.half_N_frames])
-            key = '_'.join([name_a, name_b])
+        key = '_'.join([name_a, name_b])
 
         assert len(
             neighbor_list) == self.opt['N_frames'], 'Wrong length of neighbor list: {}'.format(
                 len(neighbor_list))
 
         #### get the GT image (as the center frame)
-        if name_a in self.df_res_list:
-            GT_size_tuple = (3, 1152, 2048)
+        if down_scale > 1:
+            if name_a in self.df_res_list:
+                GT_size_tuple = (3, 576, 1024)
+            else:
+                GT_size_tuple = (3, 540, 960)
         else:
-            GT_size_tuple = (3, 1080, 1920)
+            if self.data_type == 'pkl': # self.data_type == 'lmdb'
+                # binary data is half croped because of driver capacity
+                GT_size_tuple = (3, 540, 960)
+            elif name_a in self.df_res_list:
+                GT_size_tuple = (3, 1152, 2048)
+            else:
+                GT_size_tuple = (3, 1080, 1920)
         
         if self.data_type == 'lmdb':
             img_GT = util.read_img(self.GT_env, key, GT_size_tuple)
+        elif self.data_type == 'pkl':
+             with open(osp.join(GT_root, name_a, name_b + '.pkl'), 'rb') as _f:
+                img_GT = pickle.load(_f).astype(np.float32) / 255.
         else:
-            if down_scale > 1:
-                GT_size_tuple = (GT_size_tuple[0], GT_size_tuple[1]//down_scale, GT_size_tuple[2]//down_scale)
-                img_GT = util.read_img(None, osp.join(GT_root, name_a, name_b + '.png'), (GT_size_tuple[2], GT_size_tuple[1]))
-            else:
-                img_GT = util.read_img(None, osp.join(GT_root, name_a, name_b + '.png'))
+            img_GT = util.read_img(None, osp.join(GT_root, name_a, name_b + '.png'))
 
         #### get LQ images
-        if name_a in self.df_res_list:
-            LQ_size_tuple = (3, 288, 512) if self.LR_input else (3, 1152, 2048)
-        else:
-            LQ_size_tuple = (3, 270, 480) if self.LR_input else (3, 1080, 1920)
-        if down_scale > 1:
-            LQ_size_tuple = (LQ_size_tuple[0], LQ_size_tuple[1]//down_scale, LQ_size_tuple[2]//down_scale)
+        LQ_size_tuple = (3, GT_size_tuple[1]//self.opt['scale'], GT_size_tuple[2]//self.opt['scale']) if self.LR_input else GT_size_tuple
         img_LQ_l = []
         for v in neighbor_list:
-            img_LQ_path = osp.join(LQ_root, name_a, '{:06d}.png'.format(v))
             if self.data_type == 'lmdb':
                 img_LQ = util.read_img(self.LQ_env, '{}_{:06d}'.format(name_a, v), LQ_size_tuple)
+            elif self.data_type == 'pkl':
+                img_LQ_path = osp.join(LQ_root, name_a, '{:06d}.pkl'.format(v))
+                with open(img_LQ_path, 'rb') as _f:
+                    img_LQ = pickle.load(_f).astype(np.float32) / 255.
             else:
-                if down_scale > 1:
-                    img_LQ = util.read_img(None, img_LQ_path, (LQ_size_tuple[2], LQ_size_tuple[1]))
-                else:
-                    img_LQ = util.read_img(None, img_LQ_path)
+                img_LQ_path = osp.join(LQ_root, name_a, '{:06d}.png'.format(v))
+                img_LQ = util.read_img(None, img_LQ_path)
             img_LQ_l.append(img_LQ)
 
         if self.opt['phase'] == 'train':

@@ -25,7 +25,7 @@ def _get_paths_from_images(path):
     images = []
     for dirpath, _, fnames in sorted(os.walk(path)):
         for fname in sorted(fnames):
-            if is_image_file(fname):
+            if is_image_file(fname) or fname.endswith('.pkl'):
                 img_path = os.path.join(dirpath, fname)
                 images.append(img_path)
     assert images, '{:s} has no valid image file'.format(path)
@@ -49,7 +49,7 @@ def get_image_paths(data_type, dataroot):
     if dataroot is not None:
         if data_type == 'lmdb':
             paths, sizes = _get_paths_from_lmdb(dataroot)
-        elif data_type == 'img':
+        elif data_type == 'img' or data_type == 'pkl':
             paths = sorted(_get_paths_from_images(dataroot))
         else:
             raise NotImplementedError('data_type [{:s}] is not recognized.'.format(data_type))

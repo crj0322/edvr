@@ -36,6 +36,8 @@ def parse(opt_path, is_train=True):
             if dataset['dataroot_LQ'].endswith('lmdb'):
                 is_lmdb = True
         dataset['data_type'] = 'lmdb' if is_lmdb else 'img'
+        if dataset['dataroot_LQ'].endswith('pickle') and dataset['dataroot_GT'].endswith('pickle'):
+            dataset['data_type'] = 'pkl'
         if dataset['mode'].endswith('mc'):  # for memcached
             dataset['data_type'] = 'mc'
             dataset['mode'] = dataset['mode'].replace('_mc', '')
