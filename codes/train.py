@@ -131,6 +131,7 @@ def main():
     #### create model
     model = create_model(opt)
     ssim_fn = SSIM().to(model.device)
+    ssim_fn.eval()
 
     #### resume training
     if resume_state:
@@ -316,7 +317,8 @@ def main():
                             psnr = util.calculate_psnr(rlt_img, gt_img)
                             psnr_rlt[folder].append(psnr)
                             # calculate ssim
-                            ssim = ssim_fn(model.fake_H, model.real_H).data.cpu().item()
+                            with torch.no_grad():
+                                ssim = ssim_fn(model.fake_H, model.real_H).data.cpu().item()
                             ssim_rlt[folder].append(ssim)
                             pbar.update('Test {} - {}'.format(folder, idx_d))
                         for k, v in ssim_rlt.items():
