@@ -57,6 +57,72 @@ class Predeblur_ResNet_Pyramid(nn.Module):
         return out
 
 
+class Separate_Non_Local(nn.Module):
+    ''' Embedded Gaussian Separate Non Local. '''
+
+    def __init__(self, nf=64, scale=2):
+        super(Separate_Non_Local, self).__init__()
+
+        self.hw_theta = nn.Conv3d(nf, nf//scale, 1, 1, 0)
+        self.hw_phi = nn.Conv3d(nf, nf//scale, 1, 1, 0)
+        self.hw_g = nn.Conv3d(nf, nf//scale, 1, 1, 0)
+        self.hw_z = nn.Conv3d(nf//scale, nf, 1, 1, 0)
+
+        self.c_theta = nn.Conv3d(nf, nf//scale, 1, 1, 0)
+        self.c_phi = nn.Conv3d(nf, nf//scale, 1, 1, 0)
+        self.c_g = nn.Conv3d(nf, nf//scale, 1, 1, 0)
+        self.c_z = nn.Conv3d(nf//scale, nf, 1, 1, 0)
+
+        self.t_theta = nn.Conv3d(nf, nf//scale, 1, 1, 0)
+        self.t_phi = nn.Conv3d(nf, nf//scale, 1, 1, 0)
+        self.t_g = nn.Conv3d(nf, nf//scale, 1, 1, 0)
+        self.t_z = nn.Conv3d(nf//scale, nf, 1, 1, 0)
+
+    def forward(self, x):
+        B, T, C, H, W = x.size()
+
+        # B C T H W
+        x = x.permute(0, 2, 1, 3, 4)
+
+        # spatial non local
+        theta_x = self.hw_theta(x).view(B, -1, H*W).permute(0, 2, 1)
+        phi_x = self.hw_phi(x).view(B, -1, H*W)
+        g_x = self.hw_g(x).view(B, -1, H*W).permute(0, 2, 1)
+
+        f_x = torch.matmul(theta_x, phi_x)
+        f_norm = F.softmax(f_x, dim=-1)
+        y = torch.matmul(f_norm, g_x)
+
+        hw_z = self.hw_z(y.permute(0, 2, 1).view(B, -1, T, H, W))
+
+        # channel non local
+        theta_x = self.c_theta(x).view(B, -1, T*H*W)
+        phi_x = self.c_phi(x).view(B, -1, T*H*W).permute(0, 2, 1)
+        g_x = self.c_g(x).view(B, -1, T*H*W)
+
+        f_x = torch.matmul(theta_x, phi_x)
+        f_norm = F.softmax(f_x, dim=-1)
+        y = torch.matmul(f_norm, g_x)
+
+        c_z = self.c_z(y.view(B, -1, T, H, W))
+
+        # temporal non local
+        theta_x = self.t_theta(x).permute(0, 2, 1, 3, 4).contiguous().view(B, T, -1)
+        phi_x = self.t_phi(x).permute(0, 2, 1, 3, 4).contiguous().view(B, T, -1).permute(0, 2, 1)
+        g_x = self.t_g(x).permute(0, 2, 1, 3, 4).contiguous().view(B, T, -1)
+
+        f_x = torch.matmul(theta_x, phi_x)
+        f_norm = F.softmax(f_x, dim=-1)
+        y = torch.matmul(f_norm, g_x)
+
+        t_z = self.t_z(y.view(B, T, -1, H, W).permute(0, 2, 1, 3, 4))
+
+        # output z
+        z = (hw_z + c_z + t_z + x).permute(0, 2, 1, 3, 4).contiguous()
+
+        return z
+
+
 class PCD_Align(nn.Module):
     ''' Alignment module using Pyramid, Cascading and Deformable convolution
     with 3 pyramid levels.
@@ -142,6 +208,7 @@ class TSA_Fusion(nn.Module):
         self.tAtt_2 = nn.Conv2d(nf, nf, 3, 1, 1, bias=True)
 
         # fusion conv: using 1x1 to save parameters and computation
+        self.temporal_fusion = nn.Conv3d(nframes, 1, 1, 1, bias=True)
         self.fea_fusion = nn.Conv2d(nframes * nf, nf, 1, 1, bias=True)
 
         # spatial attention (after fusion conv)
@@ -162,6 +229,10 @@ class TSA_Fusion(nn.Module):
 
     def forward(self, aligned_fea):
         B, N, C, H, W = aligned_fea.size()  # N video frames
+
+        #### temporal fusion
+        temporal_fea = self.temporal_fusion(aligned_fea).squeeze_(1)
+
         #### temporal attention
         emb_ref = self.tAtt_2(aligned_fea[:, self.center, :, :, :].clone())
         emb = self.tAtt_1(aligned_fea.view(-1, C, H, W)).view(B, N, -1, H, W)  # [B, N, C(nf), H, W]
@@ -200,12 +271,13 @@ class TSA_Fusion(nn.Module):
         att = torch.sigmoid(att)
 
         fea = fea * att * 2 + att_add
+        fea = (fea + temporal_fea) * att * 2 + att_add
         return fea
 
 
 class EDVR(nn.Module):
     def __init__(self, nf=64, nframes=5, groups=8, front_RBs=5, back_RBs=10, center=None,
-                 predeblur=False, HR_in=False, w_TSA=True, block_type='residual'):
+                 predeblur=False, HR_in=False, w_TSA=True, block_type='residual', non_local=False):
         super(EDVR, self).__init__()
         self.nf = nf
         self.center = nframes // 2 if center is None else center
@@ -215,6 +287,7 @@ class EDVR(nn.Module):
         block_fns = {'residual': arch_util.ResidualBlock_noBN,
                      'rcab': arch_util.RCAB_noBN}
         Block_noBN_f = functools.partial(block_fns[block_type], nf=nf)
+        self.non_local = non_local
 
         #### extract features (for each frame)
         if self.is_predeblur:
@@ -234,6 +307,8 @@ class EDVR(nn.Module):
         self.fea_L3_conv2 = nn.Conv2d(nf, nf, 3, 1, 1, bias=True)
 
         self.pcd_align = PCD_Align(nf=nf, groups=groups)
+        if self.non_local:
+            self.separate_non_local = Separate_Non_Local(nf)
         if self.w_TSA:
             self.tsa_fusion = TSA_Fusion(nf=nf, nframes=nframes, center=self.center)
         else:
@@ -297,6 +372,10 @@ class EDVR(nn.Module):
             aligned_fea.append(self.pcd_align(nbr_fea_l, ref_fea_l))
         aligned_fea = torch.stack(aligned_fea, dim=1)  # [B, N, C, H, W]
 
+        # non local
+        if self.non_local:
+            aligned_fea = self.separate_non_local(aligned_fea)
+        
         if not self.w_TSA:
             aligned_fea = aligned_fea.view(B, -1, H, W)
         fea = self.tsa_fusion(aligned_fea)

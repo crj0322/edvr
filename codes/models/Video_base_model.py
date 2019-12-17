@@ -29,7 +29,7 @@ class VideoBaseModel(BaseModel):
         else:
             self.netG = DataParallel(self.netG)
         # print network
-        self.print_network()
+        # self.print_network()
         self.load()
 
         if self.is_train:
@@ -79,6 +79,28 @@ class VideoBaseModel(BaseModel):
                         'lr': train_opt['lr_G']
                     },
                 ]
+            elif train_opt['ft_snl_only']:
+                normal_params = []
+                snl_params = []
+                for k, v in self.netG.named_parameters():
+                    if v.requires_grad:
+                        if 'separate_non_local' in k:
+                            snl_params.append(v)
+                        else:
+                            normal_params.append(v)
+                    else:
+                        if self.rank <= 0:
+                            logger.warning('Params [{:s}] will not optimize.'.format(k))
+                optim_params = [
+                    {  # add normal params first
+                        'params': normal_params,
+                        'lr': train_opt['lr_G']
+                    },
+                    {
+                        'params': snl_params,
+                        'lr': train_opt['lr_G']
+                    },
+                ]
             else:
                 optim_params = []
                 for k, v in self.netG.named_parameters():
@@ -123,7 +145,8 @@ class VideoBaseModel(BaseModel):
         self.optimizers[0].param_groups[0]['lr'] = 0
 
     def optimize_parameters(self, step):
-        if self.opt['train']['ft_tsa_only'] and step < self.opt['train']['ft_tsa_only']:
+        if (self.opt['train']['ft_tsa_only'] and step < self.opt['train']['ft_tsa_only']) or\
+            (self.opt['train']['ft_snl_only'] and step < self.opt['train']['ft_snl_only']):
             self.set_params_lr_zero()
 
         self.optimizer_G.zero_grad()
