@@ -72,15 +72,6 @@ class VideoTestDataset(data.Dataset):
         else:
             pass  # TODO
 
-        # process resolution
-        mod_scale = 4
-        h, w = imgs_LQ.shape[2:]
-        if (h % mod_scale) != 0 or (w % mod_scale) != 0:
-            crop_h = h - (h % mod_scale)
-            crop_w = w - (w % mod_scale)
-            imgs_LQ = imgs_LQ[:, :, :crop_h, :crop_w]
-            img_GT = img_GT[:, :4 * crop_h, :4 * crop_w]
-
         return {
             'LQs': imgs_LQ,
             'GT': img_GT,

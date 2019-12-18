@@ -270,7 +270,7 @@ class TSA_Fusion(nn.Module):
         att_add = self.sAtt_add_2(self.lrelu(self.sAtt_add_1(att)))
         att = torch.sigmoid(att)
 
-        fea = fea * att * 2 + att_add
+        # fea = fea * att * 2 + att_add
         fea = (fea + temporal_fea) * att * 2 + att_add
         return fea
 

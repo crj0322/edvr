@@ -8,6 +8,7 @@ import models.networks as networks
 import models.lr_scheduler as lr_scheduler
 from .base_model import BaseModel
 from models.loss import CharbonnierLoss, TopkCharbonnierLoss, CombinedLoss
+from models.forward import PaddingForward, PatchedForward
 
 logger = logging.getLogger('base')
 
@@ -42,7 +43,7 @@ class VideoBaseModel(BaseModel):
             elif loss_type == 'l2':
                 self.cri_pix = nn.MSELoss(reduction='sum').to(self.device)
             elif loss_type == 'cb':
-                self.cri_pix = CharbonnierLoss().to(self.device)
+                self.cri_pix = CharbonnierLoss(sum_mode=False).to(self.device)
             elif loss_type == 'tcb':
                 self.cri_pix = TopkCharbonnierLoss().to(self.device)
             elif loss_type == 'comb':
@@ -135,6 +136,11 @@ class VideoBaseModel(BaseModel):
 
             self.log_dict = OrderedDict()
 
+        if opt['datasets'].get('val', None) and opt['datasets']['val'].get('split_test', None):
+            self.test_fn = PatchedForward()
+        else:
+            self.test_fn = PaddingForward()
+
     def feed_data(self, data, need_GT=True):
         self.var_L = data['LQs'].to(self.device)
         if need_GT:
@@ -159,10 +165,10 @@ class VideoBaseModel(BaseModel):
         # set log
         self.log_dict['l_pix'] = l_pix.item()
 
-    def test(self):
+    def test(self, split=False):
         self.netG.eval()
         with torch.no_grad():
-            self.fake_H = self.netG(self.var_L)
+            self.fake_H = self.test_fn(self.netG, self.var_L)
         self.netG.train()
 
     def get_current_log(self):
